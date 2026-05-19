@@ -149,6 +149,93 @@ The following is a summary of the exported functions, followed by their docstrin
 - `propagate_distribution`: Propagate a probability distribution `dist` through a nonlinear function `f` using the covariance-propagation method of filter `kf`.
 
 
+# DAE models
+
+Models containing algebraic equations (DAEs) can be filtered by the
+`DAEUnscentedKalmanFilter` from LowLevelParticleFilters. This package
+auto-generates the descriptor split (`get_x_z` / `build_xz`) and the algebraic
+residual callback from the MTK model; you only need to supply a DAE-aware
+`discretization` and a `constraint_solver`.
+
+The recommended approach is to write the model in **index-1 form**, replacing
+any position-level (high-index) constraint by its twice-differentiated,
+dynamics-substituted form augmented with Baumgarte stabilization. The plain
+acceleration-level constraint is neutrally stable in the original constraint
+quantity — discretization error drifts the state off the manifold with no
+restoring force. Baumgarte adds a critically-damped restoring law (gains
+`α = β`) so violations decay exponentially with timescale `1/α`. In this form
+MTK does not need to perform index reduction, and the filter runs the full
+predict + correct + `forward_trajectory` pipeline while keeping the
+covariance positive-definite:
+
+```julia
+using SeeToDee, SimpleNonlinearSolve
+
+# Constrained pendulum in Baumgarte-stabilized INDEX-1 form. The original
+# position constraint x² + y² = 1 is replaced by:
+#   d²/dt²(x² + y² − 1) + 2α·d/dt(x² + y² − 1) + β²·(x² + y² − 1) = 0
+# with dynamics substituted into the second derivative, and α = β = 50.
+@mtkmodel Pendulum begin
+    @parameters begin
+        g_pend = 9.82
+        α_bg   = 50.0
+        β_bg   = 50.0
+    end
+    @variables begin
+        x(t)=1.0; y(t)=0.0; vx(t)=0.0; vy(t)=0.0; λ(t)=0.0
+        f1(t)=0.0; f2(t)=0.0; meas_x(t); meas_λ(t)
+        w1(t), [disturbance=true, input=true]
+        w2(t), [disturbance=true, input=true]
+        w3(t), [disturbance=true, input=true]
+        w4(t), [disturbance=true, input=true]
+    end
+    @equations begin
+        D(x)  ~ vx + w1
+        D(y)  ~ vy + w2
+        D(vx) ~ -λ*x + f1 + w3
+        D(vy) ~ -λ*y - g_pend + f2 + w4
+        0     ~ vx^2 + vy^2 + x*(-λ*x + f1 + w3) + y*(-λ*y - g_pend + f2 + w4) +
+                2*α_bg*(x*vx + y*vy) +
+                (β_bg^2 / 2)*(x^2 + y^2 - 1)
+        meas_x ~ x
+        meas_λ ~ λ
+    end
+end
+
+@named pendulum = Pendulum(); cpend = complete(pendulum)
+
+# A DAE-aware integrator. SeeToDee.Trapezoidal / SimpleColloc both accept
+# (f, Ts, x_inds, a_inds, nu).
+discretization = (f, Ts, xi, ai, nu) -> SeeToDee.Trapezoidal(f, Ts, xi, ai, nu; inplace=false)
+
+prob = StateEstimationProblem(cpend, [cpend.f1, cpend.f2], [cpend.meas_x, cpend.meas_λ];
+                              disturbance_inputs = [cpend.w1, cpend.w2, cpend.w3, cpend.w4],
+                              df, dg, discretization, Ts=0.01,
+                              x0map=[cpend.x=>1.0, cpend.y=>0.0,
+                                     cpend.vx=>0.0, cpend.vy=>0.0, cpend.λ=>0.0])
+
+constraint_solver = LowLevelParticleFilters.scimlbase_solver(SimpleNewtonRaphson(); reltol=1e-12)
+daeukf = get_filter(prob, DAEUnscentedKalmanFilter; constraint_solver)
+```
+
+Notes:
+- The number of `disturbance_inputs` must equal the number of differential
+  states (`length(prob.x_inds)`); process noise is interpreted as additive on
+  the differential state.
+- Tune Baumgarte gains relative to the dynamics timescale and the sampling
+  rate. `α = β` gives a critically-damped restoring law; too small and the
+  manifold drift is slow to correct, too large and the algebraic equation
+  becomes stiff relative to `Ts`.
+- `xz0` (initial descriptor) is taken from `prob.d0.μ`; pass `init=true` so
+  MTK's initialization makes it satisfy the algebraic constraint, or provide a
+  consistent `x0map` by hand.
+- Letting MTK do index reduction from the natural high-index form (just
+  `0 ~ x² + y² − 1`) is supported but discouraged: Pantelides + dummy
+  derivatives produces a DAE in which one direction of the filter covariance
+  is much more informative than another, and the canonical `R ← R − KSKᵀ`
+  Kalman update loses positive-definiteness from floating-point cancellation
+  on long trajectories.
+
 # `StateEstimationProblem`
 ```
 StateEstimationProblem(model, inputs, outputs; disturbance_inputs, discretization, Ts, df, dg, d0)

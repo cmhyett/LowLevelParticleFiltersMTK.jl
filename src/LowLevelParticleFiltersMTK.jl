@@ -3,7 +3,7 @@ module LowLevelParticleFiltersMTK
 
 using ModelingToolkit
 using LowLevelParticleFilters
-using LowLevelParticleFilters: SimpleMvNormal, AbstractKalmanFilter
+using LowLevelParticleFilters: SimpleMvNormal, AbstractKalmanFilter, DAEUnscentedKalmanFilter
 using MonteCarloMeasurements
 using Distributions
 using ForwardDiff
@@ -27,7 +27,10 @@ struct StateEstimationProblem
     ny::Int
     nw::Int
     na::Int
+    x_inds::Vector{Int}
+    a_inds::Vector{Int}
     f
+    f_cont
     g
     ps
     p
@@ -141,7 +144,7 @@ function StateEstimationProblem(model, inputs, outputs; disturbance_inputs, disc
 
     names = SignalNames(x = string.(x_sym), u = string.(inputs), y = string.(outputs), name = "")
 
-    StateEstimationProblem(model, iosys, inputs, outputs, disturbance_inputs, x_sym, nx, nu, ny, nw, na, f_disc, g.f_oop, ps, p, df, dg, d0, Ts, names)
+    StateEstimationProblem(model, iosys, inputs, outputs, disturbance_inputs, x_sym, nx, nu, ny, nw, na, x_inds, a_inds, f_disc, f_cont, g.f_oop, ps, p, df, dg, d0, Ts, names)
 end
 
 struct FCont{F,FA}
@@ -176,6 +179,63 @@ end
 
 function get_filter(prob::StateEstimationProblem, ::Type{UnscentedKalmanFilter}; kwargs...)
     UnscentedKalmanFilter{false,false,true,false}(prob.f, prob.g, prob.df.Σ, prob.dg.Σ, prob.d0; prob.Ts, prob.nu, prob.ny, prob.nx, prob.p, names = SignalNames(prob.names, "UKF"), kwargs...)
+end
+
+"""
+    get_filter(prob::StateEstimationProblem, ::Type{DAEUnscentedKalmanFilter}; constraint_solver, regenerate=true, kwargs...)
+
+Instantiate a `DAEUnscentedKalmanFilter` from a state-estimation problem built around an MTK model
+with algebraic equations. The package auto-generates `get_x_z`, `build_xz`, and the algebraic
+`residual` callback from the equation/unknown splitting that MTK produced during `mtkcompile`.
+
+The user must supply:
+- `constraint_solver`: a callable `(f, z0) -> z` that solves `f(z) ≈ 0`. Typically
+  `LowLevelParticleFilters.scimlbase_solver(SimpleNewtonRaphson(); reltol=1e-12)`.
+
+The `discretization` callback passed to `StateEstimationProblem` must be a DAE-aware integrator
+such as `SeeToDee.Trapezoidal(f, Ts, x_inds, a_inds, nu)` or `SeeToDee.SimpleColloc(...)` —
+the resulting `prob.f` is forwarded directly as the DAE UKF's `dynamics`.
+
+Requires `nw == length(prob.x_inds)` (one disturbance input per differential state); this matches
+the implicit assumption used elsewhere in this toolchain. Initial state should be on the constraint
+manifold; pass `init=true` to `StateEstimationProblem` or provide a consistent `x0map`.
+"""
+function get_filter(prob::StateEstimationProblem, ::Type{DAEUnscentedKalmanFilter};
+                    constraint_solver, regenerate=true, kwargs...)
+    prob.na > 0 || error("Model has no algebraic equations; use UnscentedKalmanFilter instead.")
+    nx_diff = length(prob.x_inds)
+    prob.nw == nx_diff || error("DAEUnscentedKalmanFilter currently requires one disturbance input per differential state (got nw=$(prob.nw), nx_diff=$nx_diff).")
+
+    xi_sv = SVector{nx_diff}(prob.x_inds)
+    ai_sv = SVector{prob.na}(prob.a_inds)
+    nx_total = prob.nx
+
+    build_lookup = ntuple(nx_total) do i
+        j = findfirst(==(i), prob.x_inds)
+        j !== nothing ? (true, j) : (false, findfirst(==(i), prob.a_inds))
+    end
+
+    get_x_z = let xi = xi_sv, ai = ai_sv
+        xz -> (xz[xi], xz[ai])
+    end
+    build_xz = let lookup = build_lookup, n = nx_total
+        (x, z) -> SVector{n}(ntuple(i -> (@inbounds (lookup[i][1] ? x[lookup[i][2]] : z[lookup[i][2]])), n))
+    end
+    residual = let f_cont = prob.f_cont, ai = ai_sv, bxz = build_xz
+        (x, z, u, p, t) -> f_cont(bxz(x, z), u, p, t)[ai]
+    end
+
+    xz0 = mean(prob.d0)
+    R1_diff = prob.df.Σ
+    Σ_diff = prob.d0.Σ[xi_sv, xi_sv]
+    d0_diff = SimpleMvNormal(xz0[xi_sv], Σ_diff)
+
+    DAEUnscentedKalmanFilter(prob.f, prob.g, residual, get_x_z, build_xz,
+                             R1_diff, prob.dg.Σ, d0_diff;
+                             xz0, nu=prob.nu, ny=prob.ny, Ts=prob.Ts, p=prob.p,
+                             constraint_solver, regenerate,
+                             names = SignalNames(prob.names, "DAEUKF"),
+                             kwargs...)
 end
 
 ModelingToolkit.parameters(f::AbstractKalmanFilter) = LowLevelParticleFilters.parameters(f)
