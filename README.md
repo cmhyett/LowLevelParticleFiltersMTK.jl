@@ -219,9 +219,20 @@ daeukf = get_filter(prob, DAEUnscentedKalmanFilter; constraint_solver)
 ```
 
 Notes:
-- The number of `disturbance_inputs` must equal the number of differential
-  states (`length(prob.x_inds)`); process noise is interpreted as additive on
-  the differential state.
+- The number of `disturbance_inputs` may differ from `length(prob.x_inds)`.
+  When `nw == nx_diff`, `prob.df.Σ` is used directly as the process-noise
+  covariance on the differential state per step (the natural convention when
+  each disturbance maps 1-to-1 to one differential state). When they differ,
+  the wrapper linearizes the *continuous-time* RHS `prob.f_cont` w.r.t. the
+  disturbance inputs to obtain `Bw = ∂(f_cont)/∂w` (size `nx_diff × nw`) and
+  uses `R1_diff = Bw · prob.df.Σ · Bwᵀ`. `Bw` is essentially a "select" matrix
+  routing each `w_i` onto the diff states whose RHS contains it, so `prob.df.Σ`
+  keeps its variance-per-step interpretation. (The continuous Jacobian is used
+  rather than the discrete one to avoid an extraneous `Ts²` factor that would
+  collapse the effective noise.) The projected `R1_diff` is rank-deficient but
+  PSD — directions of the state with no physical noise source carry zero
+  process-noise variance, then a tiny diagonal regularizer (~`√eps()·tr(R1)`)
+  is added to keep StaticArrays' cholesky happy.
 - Tune Baumgarte gains relative to the dynamics timescale and the sampling
   rate. `α = β` gives a critically-damped restoring law; too small and the
   manifold drift is slow to correct, too large and the algebraic equation
