@@ -12,17 +12,23 @@ using LinearAlgebra
     t = ModelingToolkit.t_nounits
 D = ModelingToolkit.D_nounits
 
-@mtkmodel SimpleSys begin
-    @variables begin
+@component function SimpleSys(; name)
+    pars = @parameters begin
+    end
+
+    vars = @variables begin
         x(t) = 0
         u(t) = 0
         y(t)
         w(t), [disturbance = true, input = true]
     end
-    @equations begin
+
+    equations = [
         D(x) ~ -x + u + w # Explicitly encode where dynamics noise enters the system with w
         y ~ x
-    end
+    ]
+
+    return ODESystem(equations, t; name)
 end
 
 @named model = SimpleSys()
@@ -109,6 +115,120 @@ end
 @testset "DAE UKF" begin
     @info "testing DAE UKF"
     include("test_daeukf.jl")
+end
+
+
+@testset "propagate_distribution uses kf.state_mean / kf.state_cov (UKF)" begin
+    # Build a UKF where state_mean / state_cov are sentinel wrappers around the
+    # defaults that record they were called. propagate_distribution must invoke
+    # the kf's own functions, not hard-coded weighted_mean/weighted_cov.
+    state_mean_called = Ref(0)
+    state_cov_called  = Ref(0)
+    function tagged_mean(xs, W)
+        state_mean_called[] += 1
+        LowLevelParticleFilters.weighted_mean(xs, W)
+    end
+    function tagged_cov(xs, m, W)
+        state_cov_called[] += 1
+        LowLevelParticleFilters.weighted_cov(xs, m, W)
+    end
+
+    prob_p = StateEstimationProblem(cmodel, inputs, outputs; disturbance_inputs, df, dg, discretization, Ts)
+    ukf_tagged = UnscentedKalmanFilter{false,false,true,false}(
+        prob_p.f, prob_p.g, prob_p.df.Σ, prob_p.dg.Σ, prob_p.d0;
+        prob_p.Ts, prob_p.nu, prob_p.ny, prob_p.nx, prob_p.p,
+        state_mean = tagged_mean, state_cov = tagged_cov,
+    )
+
+    f = x -> 2.0 .* x
+    d_in = SimpleMvNormal(SVector(0.5), SMatrix{1,1}(0.25))
+    propagate_distribution(f, ukf_tagged, d_in)
+
+    @test state_mean_called[] >= 1
+    @test state_cov_called[]  >= 1
+end
+
+
+@testset "x0map mixed Distribution/scalar errors" begin
+    using Distributions
+    # All Distribution -> OK (no error)
+    prob_dist = StateEstimationProblem(cmodel, inputs, outputs;
+        disturbance_inputs, df, dg, discretization, Ts,
+        x0map = [cmodel.x => Normal(0.0, 1.0)])
+    @test prob_dist isa StateEstimationProblem
+
+    # All scalar -> OK (no error)
+    prob_sc = StateEstimationProblem(cmodel, inputs, outputs;
+        disturbance_inputs, df, dg, discretization, Ts,
+        x0map = [cmodel.x => 0.0])
+    @test prob_sc isa StateEstimationProblem
+
+    # Mixed -> must error
+    bad = [cmodel.x => Normal(0.0, 1.0), cmodel.u => 0.5]
+    @test_throws ErrorException StateEstimationProblem(cmodel, inputs, outputs;
+        disturbance_inputs, df, dg, discretization, Ts, x0map = bad)
+end
+
+@testset "init=true exercises the InitializationProblem code path" begin
+    # Smoke test for the init=true branch: with a parametric model, verify the
+    # constructor runs, parameters are read from initsol, and the resulting
+    # filter can process a trajectory.
+    @component function ParamSys(; name)
+        @parameters a = 2.0
+        @variables begin
+            x(t) = 0.0
+            u(t) = 0.0
+            y(t)
+            w(t), [disturbance = true, input = true]
+        end
+        eqs = [D(x) ~ -a*x + u + w, y ~ x]
+        ODESystem(eqs, t; name)
+    end
+    @named ps_model = ParamSys()
+    cps = complete(ps_model)
+
+    prob_init = StateEstimationProblem(cps, [cps.u], [cps.y];
+        disturbance_inputs=[cps.w], df, dg, discretization, Ts,
+        pmap = Dict(cps.a => 3.5),
+        init = true)
+    # Single parameter `a` set via pmap, read back from initsol.ps[a]
+    @test prob_init.p == (3.5,)
+
+    # End-to-end: filter should run on the trajectory
+    ekf_init = get_filter(prob_init, ExtendedKalmanFilter)
+    fsol_init = forward_trajectory(ekf_init, u, y)
+    @test length(fsol_init.xt) == length(u)
+end
+
+@testset "EstimatedOutput(kf,...) defaults t from passed kf" begin
+    # Build a fresh prob/EKF and advance the filter so its index > 0
+    prob_t = StateEstimationProblem(cmodel, inputs, outputs;
+        disturbance_inputs, df, dg, discretization, Ts)
+    ekf_t = get_filter(prob_t, ExtendedKalmanFilter)
+    u0 = [0.0]
+    y0 = [0.0]
+    for _ = 1:3
+        LowLevelParticleFilters.predict!(ekf_t, u0)
+        LowLevelParticleFilters.correct!(ekf_t, u0, y0)
+    end
+    @assert ekf_t.t > 0
+
+    # Output expression that depends on time: 2*t (using the global iv)
+    eo = EstimatedOutput(ekf_t, prob_t, 2 * t)
+    # default t should be LowLevelParticleFilters.index(kf)*kf.Ts
+    expected_t = 2 * (LowLevelParticleFilters.index(ekf_t) * ekf_t.Ts)
+    out = eo(ekf_t, u0)
+    @test out.μ[1] ≈ expected_t
+
+    # explicit t override
+    out_override = eo(ekf_t, u0, ekf_t.p, 5.0)
+    @test out_override.μ[1] ≈ 10.0
+end
+
+
+@testset "linear" begin
+    @info "Testing linear"
+    include("test_linear.jl")
 end
 
 # end
