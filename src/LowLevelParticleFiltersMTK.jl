@@ -397,7 +397,7 @@ function _reconstruct_full_state(prob, sol, f::DAEUnscentedKalmanFilter, xt, Rt)
         xzs = [f.build_xz(sp, solve_alg(sp, u, tk, z)) for sp in sps]
         m   = LowLevelParticleFilters.mean_with_weights(weighted_mean, xzs, f.weight_params)
         S   = LowLevelParticleFilters.cov_with_weights(weighted_cov, xzs, m, f.weight_params)
-        S   = (S + S') / 2
+        S = LowLevelParticleFilters.symmetrize(S)
         ε   = sqrt(eps(eltype(S))) * tr(S) / prob.nx
         Rt_full[k] = S + ε*I
     end
