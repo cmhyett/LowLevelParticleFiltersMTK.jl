@@ -370,14 +370,14 @@ function (gg::EstimatedOutput)(xR::SimpleMvNormal, u, p = gg.kf.p, t = gg.kf.t, 
 end
 
 # For a DAE-UKF solution, `sol.xt`/`sol.Rt` store only the differential
-# sub-state (length nx_diff, ordered by `prob.x_inds`); the algebraic states are
+# sub-state (length nx_diff, ordered by `prob.x_inds`); the algebraic variables are
 # recovered from the differential ones through the model constraint. So that a
-# `StateEstimationSolution` can index *any* state or expression (not just the
+# `StateEstimationSolution` can index *any* variable or expression (not just the
 # differential slice), reconstruct the full state trajectory: the mean by
 # solving the constraint at the differential mean (warm-started so the
 # constraint solver stays on a single branch), and the full covariance by
 # pushing the differential `(xt, Rt)` through that same reconstruction map with
-# the unscented transform. Because the algebraic states are deterministic
+# the unscented transform. Because the algebraic variables are deterministic
 # functions of the differential ones the full covariance is rank-deficient
 # (rank ≤ nx_diff), so a trace-scaled diagonal regularizer keeps it strictly
 # positive-definite for downstream cholesky-based output propagation — mirroring
