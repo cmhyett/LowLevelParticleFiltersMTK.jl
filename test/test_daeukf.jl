@@ -12,13 +12,13 @@
     using SimpleNonlinearSolve
     using SciMLBase
 
-    @mtkmodel Pendulum begin
-        @parameters begin
+    @component function Pendulum(; name)
+        pars = @parameters begin
             g_pend = 9.82
             α_bg   = 50.0
             β_bg   = 50.0
         end
-        @variables begin
+        vars = @variables begin
             x(t)  = 1.0
             y(t)  = 0.0
             vx(t) = 0.0
@@ -33,7 +33,7 @@
             w3(t), [disturbance = true, input = true]
             w4(t), [disturbance = true, input = true]
         end
-        @equations begin
+        eqs = Equation[
             D(x)  ~ vx + w1
             D(y)  ~ vy + w2
             D(vx) ~ -λ*x + f1 + w3
@@ -43,7 +43,8 @@
                 (β_bg^2 / 2)*(x^2 + y^2 - 1)
             meas_x ~ x
             meas_λ ~ λ
-        end
+        ]
+        return System(eqs, t, vars, pars; name)
     end
 
     @named pendulum = Pendulum()
@@ -168,11 +169,11 @@ end
     using SimpleNonlinearSolve
     using SciMLBase
 
-    @mtkmodel CubicSurface begin
-        @parameters begin
+    @component function CubicSurface(; name)
+        pars = @parameters begin
             g_c = 9.82
         end
-        @variables begin
+        vars = @variables begin
             x(t)  = 0.4,    [state_priority=100]
             y(t)  = -0.3,   [state_priority=100]
             z(t)  = 0.0830, [state_priority=-1]
@@ -189,7 +190,7 @@ end
             w4(t), [disturbance = true, input = true]
             w5(t), [disturbance = true, input = true]
         end
-        @equations begin
+        eqs = Equation[
             D(x)  ~ vx
             D(y)  ~ vy
             D(z)  ~ vz
@@ -199,7 +200,8 @@ end
             0     ~ z^3 + 3*z - (x^2 + y^2)
             meas_x ~ x
             meas_λ ~ λ
-        end
+        ]
+        return System(eqs, t, vars, pars; name)
     end
 
     @named cubic_surf = CubicSurface()
