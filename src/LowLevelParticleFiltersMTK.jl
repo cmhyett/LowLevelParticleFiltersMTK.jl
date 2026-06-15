@@ -197,7 +197,7 @@ function get_filter(prob::StateEstimationProblem, ::Type{UnscentedKalmanFilter};
 end
 
 """
-    get_filter(prob::StateEstimationProblem, ::Type{DAEUnscentedKalmanFilter}; constraint_solver, regenerate=true, constant_R1=true, kwargs...)
+    get_filter(prob::StateEstimationProblem, ::Type{DAEUnscentedKalmanFilter}; constraint_solver, constant_R1=true, kwargs...)
 
 Instantiate a `DAEUnscentedKalmanFilter` from a state-estimation problem built around an MTK model
 with algebraic equations. The package auto-generates `get_x_z`, `build_xz`, and the algebraic
@@ -231,7 +231,7 @@ Initial state should be on the constraint manifold; pass `init=true` to `StateEs
 or provide a consistent `x0map`.
 """
 function get_filter(prob::StateEstimationProblem, ::Type{DAEUnscentedKalmanFilter};
-                    constraint_solver, regenerate=true, kwargs...)
+                    constraint_solver, kwargs...)
     prob.na > 0 || error("Model has no algebraic equations; use UnscentedKalmanFilter instead.")
     nx_diff = length(prob.x_inds)
 
@@ -289,7 +289,7 @@ function get_filter(prob::StateEstimationProblem, ::Type{DAEUnscentedKalmanFilte
     DAEUnscentedKalmanFilter(prob.f, prob.g, residual, get_x_z, build_xz,
                              R1_diff, prob.dg.Σ, d0_diff;
                              xz0, nu=prob.nu, ny=prob.ny, Ts=prob.Ts, p=prob.p,
-                             constraint_solver, regenerate,
+                             constraint_solver,
                              names = SignalNames(prob.names, "DAEUKF"),
                              kwargs...)
 end
