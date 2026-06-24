@@ -124,14 +124,14 @@ function StateEstimationProblem(model, inputs, outputs; disturbance_inputs, disc
     inputmap = Dict([inputs .=> 0.0; disturbance_inputs .=> 0.0]) # Ensure inputs are initialized to zero if not provided
     op = merge(inputmap, op, pmap)
     if init
-        initprob = ModelingToolkit.InitializationProblem(iosys, 0.0, op)
+        initprob = ModelingToolkit.InitializationProblem(iosys, 0.0, op; warn_initialize_determined=false)
         initsol = solve(initprob)
         # Read parameters from the solution, not the problem: initialization may solve
         # for parameter values, in which case initprob.ps[p] returns the pre-solve guess.
         p = Tuple(initsol.ps[p] for p in ps)
         x0 = SVector{nx}(initsol[x_sym])
     else
-        prob = ModelingToolkit.ODEProblem(iosys, op, (0.0, Ts))
+        prob = ModelingToolkit.ODEProblem(iosys, op, (0.0, Ts); warn_initialize_determined=false)
         x0 = SVector{nx}(prob.u0)
         p0 = prob.p
         # x0 = SVector{nx}(ModelingToolkit.get_u0(iosys, op))
@@ -647,7 +647,7 @@ function LowLevelParticleFilters.KalmanFilter(model::System, inputs, outputs; di
     inputmap = Dict(all_inputs .=> 0.0) # Ensure inputs are initialized to zero if not provided
     op = merge(inputmap, op, pmap)
     if init
-        initprob = ModelingToolkit.InitializationProblem(iosys, 0.0, op)
+        initprob = ModelingToolkit.InitializationProblem(iosys, 0.0, op; warn_initialize_determined=false)
         initsol = solve(initprob)
         # Read parameters from the solution, not the problem: initialization may solve
         # for parameter values, in which case initprob.ps[p] returns the pre-solve guess.
