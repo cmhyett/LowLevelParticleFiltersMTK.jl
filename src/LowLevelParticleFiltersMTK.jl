@@ -63,6 +63,7 @@ A structure representing a state-estimation problem.
 - `σ0`: The standard deviation of the initial state. This is used when `x0map` is not provided or when the values in `x0map` are scalars.
 - `pmap`: A dictionary mapping symbolic variables to their values. If a variable is not provided, it is assumed to be initialized to zero.
 - `init`: If `true`, the initial state is computed using an initialization problem. If `false`, the initial state is computed using the `get_u0` function.
+- `warn_initialize_determined`: Passed on to the internal `InitializationProblem`/`ODEProblem` construction, default matches MTK's `true`.
 - `xscalemap`: A dictionary mapping state variables to scaling factors. This is used to scale the state variables during integration to improve numerical stability. If a variable is not provided, it is assumed to have a scaling factor of 1.0. If provided, `discretization` is a function with signature `discretization(f_cont, Ts, x_inds, alg_inds, nu, scale_x)` where `scale_x` is a vector of scaling factors for the state variables.
 
 ## Usage:
@@ -75,7 +76,7 @@ sol       = StateEstimationSolution(filtersol, prob)   # Package into higher-lev
 plot(sol, idxs=[prob.state; prob.outputs; prob.inputs]) # Plot the solution
 ```
 """
-function StateEstimationProblem(model, inputs, outputs; disturbance_inputs, discretization, Ts, df, dg, x0map=[], pmap=[], σ0 = 1e-4, init=false, static=true, split = false, simplify=false, force_SA=true, xscalemap = nothing, kwargs...)
+function StateEstimationProblem(model, inputs, outputs; disturbance_inputs, discretization, Ts, df, dg, x0map=[], pmap=[], σ0 = 1e-4, init=false, static=true, split = false, simplify=false, force_SA=true, xscalemap = nothing, warn_initialize_determined=true, kwargs...)
 
     # We always generate two versions of the dynamics function, the difference between them is that one has a signature augmented with disturbance inputs w, f(x,u,p,t,w), and the other does not, f(x,u,p,t).
     # The particular filter used for estimation dictates which version of the dynamics function will be used.
@@ -124,14 +125,14 @@ function StateEstimationProblem(model, inputs, outputs; disturbance_inputs, disc
     inputmap = Dict([inputs .=> 0.0; disturbance_inputs .=> 0.0]) # Ensure inputs are initialized to zero if not provided
     op = merge(inputmap, op, pmap)
     if init
-        initprob = ModelingToolkit.InitializationProblem(iosys, 0.0, op; warn_initialize_determined=false)
+        initprob = ModelingToolkit.InitializationProblem(iosys, 0.0, op; warn_initialize_determined)
         initsol = solve(initprob)
         # Read parameters from the solution, not the problem: initialization may solve
         # for parameter values, in which case initprob.ps[p] returns the pre-solve guess.
         p = Tuple(initsol.ps[p] for p in ps)
         x0 = SVector{nx}(initsol[x_sym])
     else
-        prob = ModelingToolkit.ODEProblem(iosys, op, (0.0, Ts); warn_initialize_determined=false)
+        prob = ModelingToolkit.ODEProblem(iosys, op, (0.0, Ts); warn_initialize_determined)
         x0 = SVector{nx}(prob.u0)
         p0 = prob.p
         # x0 = SVector{nx}(ModelingToolkit.get_u0(iosys, op))
@@ -566,6 +567,7 @@ Construct a Kalman filter for a linear MTK ODESystem. No check is performed to v
 - `parametric_R1`: If `true`, the `R1` field of the returned filter is a function of `(x,u,p,t)`, otherwise it is a matrix that is evaluated at the `x0map, pmap` values.
 - `parametric_R2`: If `true`, the `R2` field of the returned filter is a function of `(x,u,p,t)`, otherwise it is a matrix that is evaluated at the `x0map, pmap` values.
 - `tuplify`: If `true`, the parameter vector `p` is returned as a tuple instead of an array. This can improve performance for filters with a small number of parameters of heterogeneous types.
+- `warn_initialize_determined`: Passed on to the internal `InitializationProblem` construction, see [`StateEstimationProblem`](@ref).
 - `kwargs`: Additional keyword arguments passed to `mtkcompile`.
 """
 function LowLevelParticleFilters.KalmanFilter(model::System, inputs, outputs; disturbance_inputs, Ts, R1, R2, x0map=[], pmap=[], σ0 = 1e-4, init=false, static=true, split = true, simplify=true, discretize = true, tuplify = true,
@@ -575,6 +577,7 @@ function LowLevelParticleFilters.KalmanFilter(model::System, inputs, outputs; di
     parametricD = false,
     parametricR1 = false,
     parametricR2 = false,
+    warn_initialize_determined = true,
     kwargs...)
 
     # We always generate two versions of the dynamics function, the difference between them is that one has a signature augmented with disturbance inputs w, f(x,u,p,t,w), and the other does not, f(x,u,p,t).
@@ -647,7 +650,7 @@ function LowLevelParticleFilters.KalmanFilter(model::System, inputs, outputs; di
     inputmap = Dict(all_inputs .=> 0.0) # Ensure inputs are initialized to zero if not provided
     op = merge(inputmap, op, pmap)
     if init
-        initprob = ModelingToolkit.InitializationProblem(iosys, 0.0, op; warn_initialize_determined=false)
+        initprob = ModelingToolkit.InitializationProblem(iosys, 0.0, op; warn_initialize_determined)
         initsol = solve(initprob)
         # Read parameters from the solution, not the problem: initialization may solve
         # for parameter values, in which case initprob.ps[p] returns the pre-solve guess.
@@ -760,7 +763,7 @@ function LowLevelParticleFilters.KalmanFilter(model::System, inputs, outputs; di
         end
     end
 
-    prob = StateEstimationProblem(model, inputs, outputs; disturbance_inputs, discretization = (f_cont, Ts, x_inds, a_inds, nu)->f_cont, Ts, df = SimpleMvNormal(zeros(nw), I(nw)), dg = SimpleMvNormal(zeros(ny), I(ny)), x0map, pmap, σ0, init, static, split, simplify, force_SA, kwargs...)
+    prob = StateEstimationProblem(model, inputs, outputs; disturbance_inputs, discretization = (f_cont, Ts, x_inds, a_inds, nu)->f_cont, Ts, df = SimpleMvNormal(zeros(nw), I(nw)), dg = SimpleMvNormal(zeros(ny), I(ny)), x0map, pmap, σ0, init, static, split, simplify, force_SA, warn_initialize_determined, kwargs...)
 
     (; kf=KalmanFilter(A, B, C, D, R1, R2, d0; Ts, nu, ny, nx, p, names), x_sym, ps, iosys, mats, prob)
 
